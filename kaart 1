@@ -1,14 +1,14 @@
 
+
 <!DOCTYPE html>
 <html lang="et">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Loomade varjupaikade andmed</title>
+  <title>Tallinna loomade abistamise kohad</title>
 
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 
   <style>
@@ -24,17 +24,78 @@
 
     #kaardikiht {
       width: 100%;
-      height: 75vh;
+      height: 65vh;
+    }
+
+    #vorm, #kaugused {
+      max-width: 700px;
+      margin: 20px auto;
+      padding: 16px;
+    }
+
+    input, textarea, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 10px;
+      margin: 6px 0 14px;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    #kaugusteLoend li {
+      margin: 8px 0;
     }
   </style>
+</head>
+
+<body>
+  <h1>Tallinna loomade abistamise kohad</h1>
+
+  <p id="staatus" style="text-align:center;">Laadin andmeid...</p>
+  <div id="kaardikiht"></div>
+
+  <section id="vorm">
+    <h2>Lisa uus asukoht</h2>
+    <p>Klõpsa kaardil, et valida asukoht.</p>
+    <p id="valitudKoht">Asukoht pole veel valitud.</p>
+
+    <form id="asukohaVorm">
+      <label for="nimi">Koha nimi:</label>
+      <input id="nimi" required>
+
+      <label for="kirjeldus">Kirjeldus:</label>
+      <textarea id="kirjeldus" rows="3"></textarea>
+
+      <button type="submit">Salvesta tabelisse</button>
+    </form>
+  </section>
+
+  <section id="kaugused">
+    <h2>Kaugused teistest kohtadest</h2>
+    <p id="kauguseStaatus">
+      Klõpsa kaardil, et arvutada kaugused.
+    </p>
+    <ul id="kaugusteLoend"></ul>
+  </section>
 
   <script>
     let kaart;
+    let kohad = [];
+    let valitudAsukoht = null;
+    let valikuMarker = null;
+    let laadimine = false;
 
-    const ANDMETE_URL = "https://script.google.com/macros/s/AKfycbws5S4xQGKfO6sc12VPCdTmAXkHDyvY1VJqFvML7PvEpeQR49ntv2ZrvzFMfPKvE0Kf/exec";
+    const ANDMETE_URL =
+      "https://script.google.com/macros/s/AKfycbws5S4xQGKfO6sc12VPCdTmAXkHDyvY1VJqFvML7PvEpeQR49ntv2ZrvzFMfPKvE0Kf/exec";
+
+    const markerid = L.layerGroup();
 
     function algus() {
       kaart = L.map("kaardikiht").setView([59.439, 24.773], 12);
+
+      markerid.addTo(kaart);
 
       L.tileLayer(
         "https://tiles.maaamet.ee/tm/tms/1.0.0/hybriid@GMC/{z}/{x}/{y}.png&ASUTUS=TLU&ERIALA=DIGIHUMANITAARIA",
@@ -44,46 +105,201 @@
         }
       ).addTo(kaart);
 
-      fetch(ANDMETE_URL)
-        .then(vastus => {
-          if (!vastus.ok) {
-            throw new Error("Andmete laadimine ebaõnnestus");
-          }
-          return vastus.json();
-        })
-        .then(kuva)
-        .catch(viga => {
-          console.error("Viga:", viga);
-          document.getElementById("staatus").innerText =
-            "Andmeid ei saanud laadida. Kontrolli andmete aadressi.";
-        });
-    }
+      kaart.on("click", function(e) {
+        valitudAsukoht = e.latlng;
 
-    function kuva(andmed) {
-      for (let i = 1; i < andmed.length; i++) {
-        let koht = andmed[i];
-
-        let nimi = koht[0];
-        let laius = Number(koht[1]);
-        let pikkus = Number(koht[2]);
-        let kirjeldus = koht[3];
-
-        if (!nimi || !Number.isFinite(laius) ||
-            !Number.isFinite(pikkus)) {
-          continue;
+        if (valikuMarker) {
+          kaart.removeLayer(valikuMarker);
         }
 
-        L.marker([laius, pikkus])
+        valikuMarker = L.marker(e.latlng)
           .addTo(kaart)
+          .bindPopup("Sinu valitud asukoht")
+          .openPopup();
+
+        document.getElementById("valitudKoht").textContent =
+          "Laiuskraad: " + e.latlng.lat.toFixed(6) +
+          "; pikkuskraad: " + e.latlng.lng.toFixed(6);
+
+        arvutaKaugused(e.latlng.lat, e.latlng.lng);
+      });
+
+      laadiAndmed();
+    }
+
+    // JSONP võimaldab veebilehel lugeda Apps Scripti vastust
+    // ka siis, kui brauser piirab tavalist fetch-päringut.
+    function jsonp(parameetrid, valmis) {
+      const nimi = "vastus_" + Date.now() +
+        "_" + Math.floor(Math.random() * 100000);
+
+      const skript = document.createElement("script");
+      const url = new URL(ANDMETE_URL);
+
+      Object.entries(parameetrid).forEach(([key, value]) => {
+        url.searchParams.set(key, value);
+      });
+
+      url.searchParams.set("callback", nimi);
+
+      let lõpetatud = false;
+
+      function puhasta() {
+        delete window[nimi];
+        skript.remove();
+      }
+
+      window[nimi] = function(andmed) {
+        if (lõpetatud) return;
+        lõpetatud = true;
+        puhasta();
+        valmis(andmed);
+      };
+
+      skript.onerror = function() {
+        if (lõpetatud) return;
+        lõpetatud = true;
+        puhasta();
+        document.getElementById("staatus").textContent =
+          "Tabeliga ühendamine ebaõnnestus.";
+      };
+
+      skript.src = url.toString();
+      document.body.appendChild(skript);
+    }
+
+    function laadiAndmed() {
+      if (laadimine) return;
+      laadimine = true;
+
+      jsonp({}, function(andmed) {
+        laadimine = false;
+
+        if (!Array.isArray(andmed)) {
+          document.getElementById("staatus").textContent =
+            "Tabelist ei saadud asukohti.";
+          return;
+        }
+
+        kohad = andmed;
+        kuvaKohad();
+
+        document.getElementById("staatus").textContent =
+          "Tabelist on laaditud " + (kohad.length - 1) + " rida.";
+      });
+    }
+
+    function kuvaKohad() {
+      markerid.clearLayers();
+
+      // Esimene rida sisaldab tabeli pealkirju.
+      for (let i = 1; i < kohad.length; i++) {
+        const koht = kohad[i];
+        const nimi = koht[0];
+        const laius = Number(koht[1]);
+        const pikkus = Number(koht[2]);
+        const kirjeldus = koht[3];
+
+        if (!nimi || !Number.isFinite(laius) ||
+            !Number.isFinite(pikkus)) continue;
+
+        L.marker([laius, pikkus])
+          .addTo(markerid)
           .bindPopup(
             "<b>" + turvaline(nimi) + "</b><br>" +
             turvaline(kirjeldus || "")
           );
       }
-
-      document.getElementById("staatus").innerText =
-        "Kaardi kohad on laaditud.";
     }
+
+    function kaugusKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const rad = Math.PI / 180;
+      const dLat = (lat2 - lat1) * rad;
+      const dLon = (lon2 - lon1) * rad;
+
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * rad) * Math.cos(lat2 * rad) *
+        Math.sin(dLon / 2) ** 2;
+
+      return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    function arvutaKaugused(laius, pikkus) {
+      const loend = document.getElementById("kaugusteLoend");
+      loend.replaceChildren();
+
+      let arv = 0;
+
+      for (let i = 1; i < kohad.length; i++) {
+        const koht = kohad[i];
+        const nimi = koht[0];
+        const lat = Number(koht[1]);
+        const lon = Number(koht[2]);
+
+        if (!nimi || !Number.isFinite(lat) ||
+            !Number.isFinite(lon)) continue;
+
+        const km = kaugusKm(laius, pikkus, lat, lon);
+        const rida = document.createElement("li");
+
+        rida.textContent = nimi + " – " + km.toFixed(2) + " km";
+        loend.appendChild(rida);
+        arv++;
+      }
+
+      document.getElementById("kauguseStaatus").textContent =
+        arv > 0
+          ? "Kaugused valitud kohast linnulennult:"
+          : "Tabelis pole sobivaid asukohti.";
+    }
+
+    document.getElementById("asukohaVorm")
+      .addEventListener("submit", function(e) {
+        e.preventDefault();
+
+        if (!valitudAsukoht) {
+          alert("Vali kõigepealt asukoht kaardil.");
+          return;
+        }
+
+        const nimi = document.getElementById("nimi").value.trim();
+        const kirjeldus =
+          document.getElementById("kirjeldus").value.trim();
+
+        if (!nimi) return;
+
+        document.getElementById("staatus").textContent =
+          "Salvestan asukohta...";
+
+        jsonp({
+          tegevus: "lisa",
+          nimi: nimi,
+          laiuskraad: valitudAsukoht.lat,
+          pikkuskraad: valitudAsukoht.lng,
+          kirjeldus: kirjeldus
+        }, function(vastus) {
+          if (!vastus || !vastus.ok) {
+            document.getElementById("staatus").textContent =
+              "Salvestamine ebaõnnestus.";
+            return;
+          }
+
+          document.getElementById("staatus").textContent =
+            "Asukoht salvestati tabelisse!";
+
+          document.getElementById("asukohaVorm").reset();
+          valitudAsukoht = null;
+
+          if (valikuMarker) {
+            kaart.removeLayer(valikuMarker);
+            valikuMarker = null;
+          }
+
+          laadiAndmed();
+        });
+      });
 
     function turvaline(tekst) {
       return String(tekst).replace(/[&<>"']/g, function(taht) {
@@ -96,14 +312,9 @@
         }[taht];
       });
     }
-  </script>
-</head>
 
-<body onload="algus()">
-  <h1>Tallinna loomade abistamise kohad</h1>
-  <p id="staatus" style="text-align:center;">
-    Laadin andmeid...
-  </p>
-  <div id="kaardikiht"></div>
+    window.addEventListener("load", algus);
+  </script>
 </body>
 </html>
+
